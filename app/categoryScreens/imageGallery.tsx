@@ -8,6 +8,10 @@ import Entypo from 'react-native-vector-icons/Entypo';
 
 type GalleryItem = { path: string; name: string };
 
+// Module-level cache: scan directories only once per app session.
+let imagesCache: GalleryItem[] = [];
+
+
 const ANDROID_IMAGE_DIRS = [
   '/storage/emulated/0/DCIM',
   '/storage/emulated/0/Pictures',
@@ -22,8 +26,9 @@ const IOS_IMAGE_DIRS_PLACEHOLDER: string[] = [];
 const IMAGE_EXTS = ['jpg','jpeg','png','gif','webp','heic','heif'];
 
 export default function ImageGallery() {
-  const [images, setImages] = useState<GalleryItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [images, setImages] = useState<GalleryItem[]>(() => imagesCache);
+  // Only show spinner if we have *never* loaded images during this session
+  const [loading, setLoading] = useState(() => imagesCache.length === 0);
   const [error, setError] = useState<string | null>(null);
 
   const roots = useMemo(() => (
@@ -34,8 +39,9 @@ export default function ImageGallery() {
     let isMounted = true;
     (async () => {
       try {
-        setLoading(true);
-        setError(null);
+  // only set loading if we truly need to perform an IO scan
+  if (imagesCache.length === 0) setLoading(true);
+  setError(null);
         const hasPermission = await requestStoragePermissions();
         if (!hasPermission) {
           if (isMounted) setError('Storage permission denied. Please grant access to view images.');
@@ -60,9 +66,10 @@ export default function ImageGallery() {
           await collectImagesRecursively(root, collected, 3, 800); // depth 3, cap 800 files
           if (collected.length >= 800) break;
         }
-        if (!isMounted) return;
-        // Newest first by filename mtime when possible (we didn't stat for perf). Keep as-is.
-        setImages(collected);
+  if (!isMounted) return;
+  // cache results for subsequent openings during this app session
+  imagesCache = collected;
+  setImages(collected);
       } catch (e: any) {
         if (isMounted) setError('Failed to load images');
       } finally {
