@@ -21,22 +21,25 @@ import Entypo from 'react-native-vector-icons/Entypo';
 // Load expo-av and expo-video-thumbnails dynamically so the project
 // can compile/run without those optional Expo packages. If they're
 // not available, we'll fall back to a simple message.
-let Video: any = null;
-let ResizeMode: any = null;
-let VideoThumbnails: any = null;
+let RNVideo: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const _av = require('expo-av');
-  Video = _av?.Video;
-  ResizeMode = _av?.ResizeMode;
+  RNVideo = require('react-native-video').default;
 } catch (e) {
-  // module not available
+  RNVideo = null;
 }
+let createThumbnailFunc: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  VideoThumbnails = require('expo-video-thumbnails');
+  // Avoid requiring native thumbnail libraries at module-eval time.
+  // We'll intentionally leave createThumbnailFunc null here so the
+  // app doesn't try to configure native build-time code that may
+  // be incompatible with the current RN/Gradle setup. If you want
+  // to enable native thumbnail generation, provide it at runtime
+  // from a guarded initializer (see comments below).
+  createThumbnailFunc = null;
 } catch (e) {
-  // module not available
+  createThumbnailFunc = null;
 }
 
 type VideoItem = {
@@ -44,6 +47,9 @@ type VideoItem = {
   name: string;
   thumbnail?: string | null;
 };
+
+// module-level cache so we only scan once per app session
+let videosCache: VideoItem[] = [];
 
 const { width } = Dimensions.get('window');
 const NUM_COLUMNS = 3;
@@ -63,8 +69,8 @@ const IOS_VIDEO_DIRS_PLACEHOLDER: string[] = [];
 const VIDEO_EXTS = ['mp4', 'mov', 'avi', 'mkv', '3gp', 'webm'];
 
 export default function VideoGallery() {
-  const [videos, setVideos] = useState<VideoItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [videos, setVideos] = useState<VideoItem[]>(() => videosCache);
+  const [loading, setLoading] = useState(() => videosCache.length === 0);
   const [error, setError] = useState<string | null>(null);
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
   const roots = Platform.OS === 'android' ? ANDROID_VIDEO_DIRS : IOS_VIDEO_DIRS_PLACEHOLDER;
@@ -73,8 +79,9 @@ export default function VideoGallery() {
     let isMounted = true;
     const loadVideos = async () => {
       try {
-        setLoading(true);
-        setError(null);
+  // only show spinner on the first-ever load during this app session
+  if (videosCache.length === 0) setLoading(true);
+  setError(null);
         const hasPermission = await requestStoragePermissions();
         if (!hasPermission) {
           if (isMounted) setError('Storage permission denied. Please grant access to view videos.');
@@ -104,20 +111,34 @@ export default function VideoGallery() {
           await collectVideosRecursively(root, collected, 3, 100);
           if (collected.length >= 100) break;
         }
-        for (const vid of collected) {
-          try {
-            const { uri } = await VideoThumbnails.getThumbnailAsync(vid.path, { time: 1000 });
-            vid.thumbnail = uri;
-          } catch {
-            vid.thumbnail = null;
-          }
+          // Do not attempt to generate native thumbnails here. Leave
+          // thumbnail empty so the UI renders a safe JS-only placeholder.
+          //
+          // If you want to enable native thumbnail generation later, do it
+          // from a guarded runtime initializer (for example, in an app
+          // startup routine) that tests for the native module's presence
+          // and only then calls into it. Avoid requiring native modules at
+          // module-eval time (top-level require) because some libraries
+          // will add Gradle configuration that can fail during Android
+          // project configuration/evaluation (see previous build error).
+          // Example (pseudo):
+          //  try { const ct = require('react-native-create-thumbnail');
+          //    if (ct) { createThumbnailFunc = ct.createThumbnail || ct; }
+          //  } catch (e) { /* leave null */ }
+          // Then, run thumbnail generation after the native module is
+          // confirmed available and the app is running, not during module
+          // evaluation.
+          for (const vid of collected) vid.thumbnail = null;
+        if (isMounted) {
+          // cache results for subsequent openings during this app session
+          videosCache = collected;
+          setVideos(collected);
         }
-        if (isMounted) setVideos(collected);
       } catch (err) {
         console.error('Error loading videos:', err);
         if (isMounted) setError('Failed to load videos. Please try again.');
       } finally {
-        if (isMounted) setLoading(false);
+  if (isMounted) setLoading(false);
       }
     };
     loadVideos();
@@ -165,22 +186,25 @@ export default function VideoGallery() {
       isCurrent: boolean;
       onPress: () => void;
     }) => {
-  const videoRef = useRef<any>(null);
+      const videoRef = useRef<any>(null);
       const [playbackError, setPlaybackError] = useState<string | null>(null);
 
       useEffect(() => {
         return () => {
-          if (videoRef.current) {
+          // react-native-video uses paused prop; there's no pauseAsync
+          // for expo-av we'd try to pause if we had a ref with pauseAsync
+          if (videoRef.current && videoRef.current.pauseAsync) {
             videoRef.current.pauseAsync().catch(console.warn);
           }
         };
       }, []);
 
       const handleError = (error: { error: { message?: string } } | string) => {
+        // Log the full error object to aid debugging in device logs
+        console.error('Video playback error object:', error);
         const message =
           typeof error === 'string' ? error : error?.error?.message || 'Unknown error';
-        console.error('Video playback error:', message);
-        setPlaybackError('Error loading video');
+        setPlaybackError(message || 'Error loading video');
       };
 
       return (
@@ -194,36 +218,51 @@ export default function VideoGallery() {
                     { justifyContent: 'center', alignItems: 'center', backgroundColor: '#1a1a1a' },
                   ]}
                 >
-                  <Text style={{ color: 'white' }}>{playbackError}</Text>
+                  <Text style={{ color: 'white', marginBottom: 8 }}>{playbackError}</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      // toggle the current video to trigger re-mount of player
+                      onPress();
+                      setTimeout(() => onPress(), 200);
+                    }}
+                    style={{ backgroundColor: '#7d64ca', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 6 }}
+                  >
+                    <Text style={{ color: 'white' }}>Retry</Text>
+                  </TouchableOpacity>
                 </View>
               ) : (
-                <Video
+                <RNVideo
                   ref={videoRef}
-                  source={{ uri: item.path }}
+                  // Ensure local file URIs are provided as file:// for Android
+                  source={{ uri: item.path.startsWith('file://') ? item.path : 'file://' + item.path }}
                   style={styles.video}
-                  useNativeControls
-                  resizeMode={ResizeMode.CONTAIN}
-                  isLooping
-                  shouldPlay={isCurrent}
-                  onError={handleError}
+                  resizeMode={'contain'}
+                  repeat={true}
+                  paused={!isCurrent}
+                  onError={(e: any) => handleError(e)}
                   onLoadStart={() => setPlaybackError(null)}
+                  controls={true}
                 />
               )}
             </View>
               ) : (
-            <View style={styles.thumbnailContainer}>
-              {item.thumbnail ? (
-                <Image source={{ uri: item.thumbnail }} style={styles.thumbnailImage} />
-              ) : (
-                <View style={[styles.thumbnailImage, { backgroundColor: '#1a1a2e' }]} />
-              )}
-              <View style={styles.playOverlay}>
-                <Entypo name="controller-play" size={28} color="white" />
+              <View style={styles.thumbnailContainer}>
+                {/* JS-only placeholder: show a dim background with a centered play icon.
+                    This avoids native thumbnail dependencies while keeping a clear
+                    affordance for playback. If a native thumbnail provider is
+                    added later, set item.thumbnail to a file:// or http(s) URI
+                    before rendering and replace this block with an Image. */}
+                <View style={[styles.thumbnailImage, { backgroundColor: '#10121a', justifyContent: 'center', alignItems: 'center' }]}>
+                  {/* subtle pseudo-thumbnail: a faint rectangle and play glyph */}
+                  <View style={{ width: '85%', height: '60%', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 6 }} />
+                </View>
+                <View style={styles.playOverlay}>
+                  <Entypo name="controller-play" size={28} color="white" />
+                </View>
+                <Text style={styles.videoName} numberOfLines={1}>
+                  {item.name}
+                </Text>
               </View>
-              <Text style={styles.videoName} numberOfLines={1}>
-                {item.name}
-              </Text>
-            </View>
           )}
         </TouchableOpacity>
       );
@@ -255,13 +294,13 @@ export default function VideoGallery() {
     );
   }
 
-  // If expo-av isn't available, show a friendly fallback UI.
-  if (!Video) {
+  // If react-native-video isn't available, show a friendly fallback UI.
+  if (!RNVideo) {
     return (
       <View style={[styles.loadingContainer, { padding: 20 }]}> 
         <Text style={{ color: 'white', textAlign: 'center' }}>
-          Video playback is not available because the optional native module is not installed.
-          To enable it, install 'expo-av' or replace this screen with a native player.
+          Video playback is not available because the native player is not installed.
+          To enable it, install 'react-native-video' and rebuild the app.
         </Text>
       </View>
     );
@@ -304,6 +343,7 @@ const styles = StyleSheet.create({
     gap: ITEM_GAP,
   },
   videoContainer: {
+    marginTop: 20,
     width: ITEM_SIZE,
     height: ITEM_SIZE,
     marginBottom: ITEM_GAP,
