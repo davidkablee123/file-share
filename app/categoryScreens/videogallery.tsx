@@ -50,6 +50,9 @@ type VideoItem = {
 
 // module-level cache so we only scan once per app session
 let videosCache: VideoItem[] = [];
+// Whether we've performed the first scan in this app session. Controls
+// whether the loading spinner appears when opening the gallery again.
+let videosScannedOnce = false;
 
 const { width } = Dimensions.get('window');
 const NUM_COLUMNS = 3;
@@ -70,10 +73,15 @@ const VIDEO_EXTS = ['mp4', 'mov', 'avi', 'mkv', '3gp', 'webm'];
 
 export default function VideoGallery() {
   const [videos, setVideos] = useState<VideoItem[]>(() => videosCache);
-  const [loading, setLoading] = useState(() => videosCache.length === 0);
+  // Only show the spinner if we've never scanned videos this session
+  const [loading, setLoading] = useState(() => (!videosScannedOnce && videosCache.length === 0));
   const [error, setError] = useState<string | null>(null);
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
   const roots = Platform.OS === 'android' ? ANDROID_VIDEO_DIRS : IOS_VIDEO_DIRS_PLACEHOLDER;
+  // Hooks must be called in the same order on every render. Move
+  // navigation hook here so it isn't skipped by early returns
+  // (loading/error) later in the render path.
+  const navigation = useNavigation();
 
   useEffect(() => {
     let isMounted = true;
@@ -111,27 +119,11 @@ export default function VideoGallery() {
           await collectVideosRecursively(root, collected, 3, 100);
           if (collected.length >= 100) break;
         }
-          // Do not attempt to generate native thumbnails here. Leave
-          // thumbnail empty so the UI renders a safe JS-only placeholder.
-          //
-          // If you want to enable native thumbnail generation later, do it
-          // from a guarded runtime initializer (for example, in an app
-          // startup routine) that tests for the native module's presence
-          // and only then calls into it. Avoid requiring native modules at
-          // module-eval time (top-level require) because some libraries
-          // will add Gradle configuration that can fail during Android
-          // project configuration/evaluation (see previous build error).
-          // Example (pseudo):
-          //  try { const ct = require('react-native-create-thumbnail');
-          //    if (ct) { createThumbnailFunc = ct.createThumbnail || ct; }
-          //  } catch (e) { /* leave null */ }
-          // Then, run thumbnail generation after the native module is
-          // confirmed available and the app is running, not during module
-          // evaluation.
           for (const vid of collected) vid.thumbnail = null;
         if (isMounted) {
           // cache results for subsequent openings during this app session
           videosCache = collected;
+          videosScannedOnce = true;
           setVideos(collected);
         }
       } catch (err) {
@@ -306,8 +298,6 @@ export default function VideoGallery() {
     );
   }
 
-  const navigation = useNavigation();
-
   return (
     <View style={styles.container}>
       <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()} activeOpacity={0.7}>
@@ -341,6 +331,8 @@ const styles = StyleSheet.create({
   },
   listContent: {
     gap: ITEM_GAP,
+    marginTop: 20,
+
   },
   videoContainer: {
     marginTop: 20,
