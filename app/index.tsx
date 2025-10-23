@@ -7,7 +7,6 @@ import { requestStoragePermissions, openManageAllFilesSettings, isExternalStorag
 import Feather from 'react-native-vector-icons/Feather';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import { Bell } from 'lucide-react-native';
 
 export default function HomeScreen() {
   const navigation = useNavigation();
@@ -18,10 +17,8 @@ export default function HomeScreen() {
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const nm = NativeModules?.AllFilesPermissionModule;
-      // Use console.debug so it appears in metro/adb logs without UI
       console.debug('[Debug] AllFilesPermissionModule present ->', !!nm);
     } catch (e) {
-      // ignore
     }
   }, []);
   let sendReceivePromptShown = false;
@@ -31,8 +28,6 @@ export default function HomeScreen() {
       if (Platform.OS === 'android') {
         const ver = Number(Platform.Version) || 0;
         if (ver >= 30) {
-          // Open the exact All-files settings page and do not request
-          // the runtime media permission.
           if (!sendReceivePromptShown) {
             sendReceivePromptShown = true;
               try {
@@ -116,7 +111,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.button, styles.buttonSecondary]}
-            onPress={() => navigation.navigate('Categories' as never)}
+            onPress={() => navigation.navigate(''as never)}
           >
             <Feather name="download" size={40} color="white" />
             <Text style={styles.buttonText}>Receive</Text>
@@ -126,10 +121,10 @@ export default function HomeScreen() {
 
         {/* Copyright and image moved to bottom */}
         <View style={styles.bottomCopyrightContainer}>
-          {/* <Image
-            source={require('../assets/images/image__3 monochrome')}
+          <Image
+            source={require('../assets/images/image__3monochrome.png')}
             style={{ width: 40, height: 40, marginBottom: 10, resizeMode: 'contain', opacity: 0.7 }}
-          /> */}
+          />
           <Text style={styles.copyRightText}>© 2025 360Files Share. All rights reserved.</Text>
         </View>
 
