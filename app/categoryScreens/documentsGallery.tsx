@@ -4,22 +4,18 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import Entypo from 'react-native-vector-icons/Entypo';
 import * as safeRfs from '../utils/safeRfs';
-let FileViewer: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  FileViewer = require('react-native-file-viewer');
-} catch (e) {
-  FileViewer = null;
-}
+import { openManageAllFilesSettings } from '../../utils/permissions';
 
 type DocItem = { path: string; name: string };
 
 let docsCache: DocItem[] = [];
+let docsSettingsPromptShown = false;
 
 const DOC_EXTS = ['pdf', 'doc', 'docx', 'txt', 'ppt', 'pptx', 'xls', 'xlsx'];
 
 const ANDROID_DOC_DIRS = [
   '/storage/emulated/0/Download',
+  '/storage/emulated/0/Downloads',
   '/storage/emulated/0/Documents',
   '/storage/emulated/0/DCIM',
   '/storage/emulated/0/WhatsApp/Media/WhatsApp Documents',
@@ -33,6 +29,8 @@ export default function DocumentsGallery() {
   const [loading, setLoading] = useState(() => docsCache.length === 0);
   const [error, setError] = useState<string | null>(null);
 
+  const [scannedRoots, setScannedRoots] = useState<string[]>([]);
+
   useEffect(() => {
     let isMounted = true;
     const load = async () => {
@@ -41,9 +39,14 @@ export default function DocumentsGallery() {
         if (docsCache.length === 0) setLoading(true);
         setError(null);
         const ok = await requestStoragePermissions();
+        console.log('[DocumentsGallery] requestStoragePermissions ->', ok);
         if (!ok) {
-          if (isMounted) setError('Storage permission denied.');
-          openDeviceSettings();
+          if (isMounted) setError('Storage permission denied. Opening settings…');
+          // Prompt the user to grant All-files access (only once per session)
+          if (!docsSettingsPromptShown) {
+            docsSettingsPromptShown = true;
+            try { await openManageAllFilesSettings(); } catch (e) { console.warn('open settings failed', e); }
+          }
           return;
         }
         const platformPaths = safeRfs.getPlatformPaths();
@@ -51,22 +54,51 @@ export default function DocumentsGallery() {
           if (isMounted) setError("File system native module isn't available. Install and rebuild the app (react-native-fs).");
           return;
         }
-        const roots = Platform.OS === 'android'
-          ? ANDROID_DOC_DIRS
-          : IOS_DOC_DIRS_PLACEHOLDER.length ? IOS_DOC_DIRS_PLACEHOLDER : [platformPaths.docs].filter(Boolean) as string[];
+        let roots: string[] = [];
+        if (Platform.OS === 'android') {
+          const RNFS = safeRfs.getRNFSSync();
+          if (RNFS && RNFS.DownloadDirectoryPath) {
+            const esd = RNFS.ExternalStorageDirectoryPath || '';
+            roots = [
+              RNFS.DownloadDirectoryPath,
+              esd ? esd + '/Documents' : '',
+              esd ? esd + '/Download' : '',
+            ].filter(Boolean);
+          } else {
+            roots = ANDROID_DOC_DIRS;
+          }
+        } else {
+          roots = IOS_DOC_DIRS_PLACEHOLDER.length ? IOS_DOC_DIRS_PLACEHOLDER : [platformPaths.docs].filter(Boolean) as string[];
+        }
         if (isMounted) setScannedRoots(roots);
+        console.log('[DocumentsGallery] scanning roots:', roots);
         const collected: DocItem[] = [];
         for (const root of roots) {
           try {
-            const exists = await safeRfs.exists(root);
+            let exists = false;
+            try {
+              exists = await safeRfs.exists(root);
+              console.log('[DocumentsGallery] exists(', root, ') ->', exists);
+            } catch (e) {
+              console.warn('[DocumentsGallery] exists() failed for', root, e);
+              continue;
+            }
             if (!exists) continue;
           } catch { continue; }
-          await collectDocsRecursively(root, collected, 3, 400);
+          try {
+            await collectDocsRecursively(root, collected, 3, 400);
+          } catch (e) {
+            console.warn('[DocumentsGallery] readDir failed for', root, e);
+          }
           if (collected.length >= 400) break;
         }
-        if (!isMounted) return;
-        docsCache = collected;
-        setItems(collected);
+  if (!isMounted) return;
+  console.log('[DocumentsGallery] collected files:', collected.length);
+  const uniqueMap = new Map<string, DocItem>();
+  for (const it of collected) uniqueMap.set(it.path, it);
+  const unique = Array.from(uniqueMap.values());
+  docsCache = unique;
+  setItems(unique);
       } catch (e) {
         if (isMounted) setError('Failed to load documents');
       } finally {
@@ -77,24 +109,62 @@ export default function DocumentsGallery() {
     return () => { isMounted = false };
   }, []);
 
-  const [scannedRoots, setScannedRoots] = useState<string[]>([]);
+  const openDocument = async (item: DocItem) => {
+    setError(null);
+    try {
+      const RNFS = safeRfs.getRNFSSync();
+      // Ensure file exists where possible
+      if (RNFS) {
+        const exists = await safeRfs.exists(item.path);
+        if (!exists) {
+          setError('File not found');
+          return;
+        }
+      }
+
+      const uri = item.path.startsWith('file://') ? item.path : 'file://' + item.path;
+
+      const FV = require('react-native-file-viewer');
+      if (!FV || typeof FV.open !== 'function') {
+        setError('Document viewer native module not available. Install and rebuild react-native-file-viewer.');
+        return;
+      }
+
+      await FV.open(uri, { showOpenWithDialog: true });
+    } catch (e: any) {
+      console.error('Failed to open document', e);
+      const msg = e?.message || String(e);
+      setError('Failed to open document: ' + msg);
+    }
+  };
+
+  // Load persisted cache (if available) so the gallery shows instantly across restarts
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const AsyncStorage = require('@react-native-async-storage/async-storage');
+        const raw = await AsyncStorage.getItem('docsCacheV1');
+        if (raw && mounted) {
+          const parsed = JSON.parse(raw) as DocItem[];
+          docsCache = parsed;
+          setItems(parsed);
+          setLoading(false);
+        }
+      } catch (e) {
+        // ignore: AsyncStorage not available or parse failed
+      }
+    })();
+    return () => { mounted = false };
+  }, []);
+
 
   const renderItem = ({ item }: { item: DocItem }) => (
     <TouchableOpacity
       style={styles.thumbWrap}
       activeOpacity={0.8}
-      onPress={async () => {
-        if (!FileViewer) {
-          setError('Document viewer module not available. Install and rebuild react-native-file-viewer.');
-          return;
-        }
-        try {
-          await FileViewer.open(item.path);
-        } catch (e) {
-          console.error('Failed to open document', e);
-          setError('Failed to open document');
-        }
-      }}
+      onPress={() => openDocument(item)}
     >
       <View style={styles.thumb}>
         <Entypo name="text-document" size={34} color="white" />
@@ -131,25 +201,28 @@ export default function DocumentsGallery() {
         <Entypo name="chevron-thin-left" size={20} color="white" />
       </TouchableOpacity>
 
-      {/* show concise scanned roots + count */}
-      <View style={{ paddingTop: 64, paddingHorizontal: 12 }}>
-        <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 12 }}>Scanned: {scannedRoots.length ? scannedRoots.join(', ') : '—'}</Text>
-        <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 12 }}>{items.length} files</Text>
-      </View>
-
       {error ? (
         <View style={styles.centerFill}><Text style={styles.errorText}>{error}</Text></View>
       ) : (
-        <FlatList
-          data={items}
-          keyExtractor={(it) => it.path}
-          numColumns={3}
-          renderItem={renderItem}
-          contentContainerStyle={styles.grid}
-          initialNumToRender={24}
-          windowSize={10}
-          removeClippedSubviews
-        />
+        items.length === 0 ? (
+          <View style={[styles.centerFill, { padding: 16 }]}> 
+            <Text style={{ color: 'white', marginBottom: 12 }}>No documents found in scanned folders.</Text>
+              <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center' }}>
+                If you denied storage permission earlier, open the app settings to grant access. The app will prompt for storage access on first launch.
+              </Text>
+          </View>
+        ) : (
+          <FlatList
+            data={items}
+            keyExtractor={(it) => it.path}
+            numColumns={3}
+            renderItem={renderItem}
+            contentContainerStyle={styles.grid}
+            initialNumToRender={24}
+            windowSize={10}
+            removeClippedSubviews
+          />
+        )
       )}
     </View>
   );
@@ -233,6 +306,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.03)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  actionButton: {
+    backgroundColor: '#7d64ca',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  actionButtonText: {
+    color: 'white',
+    fontWeight: '600',
   },
 });
 

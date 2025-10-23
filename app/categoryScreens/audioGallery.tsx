@@ -8,7 +8,9 @@ import * as safeRfs from '../utils/safeRfs';
 let Sound: any = null;
 try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    Sound = require('react-native-sound');
+    const _s = require('react-native-sound');
+    // Some bundlers put the actual constructor on .default
+    Sound = _s && _s.default ? _s.default : _s;
 } catch (e) {
     Sound = null;
 }
@@ -43,10 +45,31 @@ export default function AudioGallery() {
                     if (isMounted) setError("File system native module isn't available. Install and rebuild the app (react-native-fs).");
                     return;
                 }
-                        const roots = Platform.OS === 'android'
-                            ? ['/storage/emulated/0/Music', '/storage/emulated/0/Download']
-                            : [platformPaths.docs].filter(Boolean) as string[];
+                        // Build candidate roots and remove obvious duplicates (e.g. /sdcard and /storage/emulated/0 aliases)
+                        const potentialRoots = Platform.OS === 'android'
+                            ? [
+                                '/storage/emulated/0/Music',
+                                '/storage/emulated/0/Download',
+                                '/sdcard/Music',
+                                '/sdcard/Download',
+                                '/storage/emulated/0/Podcasts',
+                                '/storage/emulated/0/Audiobooks',
+                                '/storage/emulated/0/Alarms',
+                                '/storage/emulated/0/Notifications',
+                                '/storage/emulated/0/Ringtones',
+                                '/storage/emulated/0/Android/data'
+                            ]
+                            : [
+                                platformPaths.docs,
+                                platformPaths.caches,
+                                // bundle may contain media for some apps
+                                (platformPaths as any).bundle
+                            ].filter(Boolean) as string[];
+                        // Normalize and deduplicate root paths so we don't scan the same location twice
+                        const roots = Array.from(new Set(potentialRoots.map(p => (p || '').replace(/\/+$/, '')))).filter(Boolean);
                 const collected: AudioItem[] = [];
+                // Track seen file paths to avoid adding duplicates coming from multiple roots/aliases
+                const seenPaths = new Set<string>();
                 for (const root of roots) {
                     try {
                         const exists = await safeRfs.exists(root);
@@ -58,7 +81,11 @@ export default function AudioGallery() {
                             if (!e.isDirectory()) {
                                 const lower = (e.name || '').toLowerCase();
                                 if (lower.endsWith('.mp3') || lower.endsWith('.m4a') || lower.endsWith('.wav') || lower.endsWith('.aac')) {
-                                    collected.push({ path: e.path, name: e.name });
+                                    // Normalize path and skip if we've already seen it
+                                    const p = (e.path || '').replace(/\/+$/, '');
+                                    if (seenPaths.has(p)) continue;
+                                    seenPaths.add(p);
+                                    collected.push({ path: p, name: e.name });
                                 }
                             }
                         }
@@ -71,11 +98,21 @@ export default function AudioGallery() {
             } catch (e) {
                 if (isMounted) setError('Failed to load audio files');
             } finally {
-                        if (!isMounted) setLoading(false);
+                        if (isMounted) setLoading(false);
             }
         };
         load();
-        return () => { isMounted = false };
+        return () => {
+            isMounted = false;
+            // Ensure any playing audio is stopped and released on unmount
+            if (playerRef.current) {
+                try {
+                    if (typeof playerRef.current.stop === 'function') playerRef.current.stop();
+                    if (typeof playerRef.current.release === 'function') playerRef.current.release();
+                } catch (e) {}
+                playerRef.current = null;
+            }
+        };
     }, []);
 
             const handlePlay = (item: AudioItem) => {
@@ -85,24 +122,37 @@ export default function AudioGallery() {
                 }
                 // stop any existing player
                 if (playerRef.current) {
-                    try { playerRef.current.stop(); playerRef.current.release(); } catch {}
+                    try {
+                        if (typeof playerRef.current.stop === 'function') playerRef.current.stop();
+                        if (typeof playerRef.current.release === 'function') playerRef.current.release();
+                    } catch (e) {}
                     playerRef.current = null;
                 }
-                // For files on external storage, pass an empty basePath (not MAIN_BUNDLE)
-                // Using Sound.MAIN_BUNDLE causes loading to fail for absolute file paths.
-                const s = new Sound(item.path, '', (err: any) => {
-                    if (err) {
-                        console.error('Sound error', err);
-                        setError('Failed to play audio');
-                        return;
-                    }
-                    playerRef.current = s;
-                    s.play((success: boolean) => {
-                        if (!success) setError('Playback failed');
-                        try { s.release(); } catch {}
-                        playerRef.current = null;
+                // Determine constructor function
+                const SoundCtor = typeof Sound === 'function' ? Sound : (Sound && Sound.Sound) ? Sound.Sound : null;
+                if (!SoundCtor) {
+                    setError('Audio native module has unexpected shape; playback unavailable.');
+                    return;
+                }
+                // For absolute file paths on Android, pass empty basePath
+                try {
+                    const s = new SoundCtor(item.path, '', (err: any) => {
+                        if (err) {
+                            console.error('Sound error', err);
+                            setError('Failed to play audio');
+                            return;
+                        }
+                        playerRef.current = s;
+                        s.play((success: boolean) => {
+                            if (!success) setError('Playback failed');
+                            try { s.release(); } catch {}
+                            playerRef.current = null;
+                        });
                     });
-                });
+                } catch (err) {
+                    console.error('Failed to construct Sound:', err);
+                    setError('Playback initialization failed');
+                }
             };
 
             const handleStop = () => {
@@ -137,14 +187,15 @@ export default function AudioGallery() {
                             renderItem={({ item }) => (
                                 <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <Text style={{ color: 'white', flex: 1 }}>{item.name}</Text>
-                                    <View style={{ flexDirection: 'row', gap: 8 }}>
-                                        <TouchableOpacity onPress={() => handlePlay(item)} style={{ padding: 8 }}>
-                                            <Text style={{ color: '#7d64ca' }}>Play</Text>
-                                        </TouchableOpacity>
-                                        <TouchableOpacity onPress={handleStop} style={{ padding: 8 }}>
-                                            <Text style={{ color: '#7d64ca' }}>Stop</Text>
-                                        </TouchableOpacity>
-                                    </View>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                                <TouchableOpacity onPress={() => handlePlay(item)} style={{ padding: 8 }}>
+                                                    <Text style={{ color: '#7d64ca' }}>Play</Text>
+                                                </TouchableOpacity>
+                                                <View style={{ width: 8 }} />
+                                                <TouchableOpacity onPress={handleStop} style={{ padding: 8 }}>
+                                                    <Text style={{ color: '#7d64ca' }}>Stop</Text>
+                                                </TouchableOpacity>
+                                            </View>
                                 </View>
                             )}
                         />
@@ -155,9 +206,11 @@ export default function AudioGallery() {
 
 const styles = StyleSheet.create({
     backButton: {
-        position: 'absolute',
         marginTop: 30,
-        top: 20, left: 16, zIndex: 10, width: 40, height: 40,
+        marginLeft: 16,
+        alignSelf: 'flex-start',
+        width: 40,
+        height: 40,
         borderRadius: 20,
         backgroundColor: 'rgba(125, 100, 202, 0.15)',
         borderWidth: 1,

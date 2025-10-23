@@ -1,6 +1,9 @@
 import { Header } from '@react-navigation/elements';
 import { useNavigation } from '@react-navigation/native';
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, StyleSheet, Text, TouchableOpacity, View, Platform, NativeModules, ToastAndroid } from 'react-native';
+import { AppState } from 'react-native';
+import React from 'react';
+import { requestStoragePermissions, openManageAllFilesSettings, isExternalStorageManager } from '../utils/permissions';
 import Feather from 'react-native-vector-icons/Feather';
 import FontAwesome from 'react-native-vector-icons/FontAwesome';
 import Ionicons from 'react-native-vector-icons/Ionicons';
@@ -8,6 +11,74 @@ import { Bell } from 'lucide-react-native';
 
 export default function HomeScreen() {
   const navigation = useNavigation();
+  // Silent debug: log whether the native AllFilesPermissionModule is available
+  const [hasAllFilesPermission, setHasAllFilesPermission] = React.useState(true);
+  const [showManualBanner, setShowManualBanner] = React.useState(false);
+  React.useEffect(() => {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const nm = NativeModules?.AllFilesPermissionModule;
+      // Use console.debug so it appears in metro/adb logs without UI
+      console.debug('[Debug] AllFilesPermissionModule present ->', !!nm);
+    } catch (e) {
+      // ignore
+    }
+  }, []);
+  let sendReceivePromptShown = false;
+
+  const ensurePermissionThen = async (cb: () => void) => {
+    try {
+      if (Platform.OS === 'android') {
+        const ver = Number(Platform.Version) || 0;
+        if (ver >= 30) {
+          // Open the exact All-files settings page and do not request
+          // the runtime media permission.
+          if (!sendReceivePromptShown) {
+            sendReceivePromptShown = true;
+              try {
+                console.debug('[Debug] attempting to open All-files settings');
+                if (Platform.OS === 'android') ToastAndroid.show('Opening All-files settings…', ToastAndroid.SHORT);
+                await openManageAllFilesSettings();
+              } catch (e) {
+                console.debug('[Debug] openManageAllFilesSettings failed', e);
+                if (Platform.OS === 'android') ToastAndroid.show('Failed to open All-files settings', ToastAndroid.SHORT);
+              }
+          }
+          return;
+        }
+      }
+
+      const ok = await requestStoragePermissions();
+      if (ok) { 
+        if (Platform.OS === 'android') ToastAndroid.show('Permission granted', ToastAndroid.SHORT);
+        cb(); 
+        return; 
+      }
+      if (!sendReceivePromptShown) {
+    const sendReceivePromptShown = React.useRef(false);
+        try {
+    const checkAllFilesPermission = React.useCallback(async () => {
+      if (Platform.OS === 'android' && Number(Platform.Version) >= 30) {
+        const granted = await isExternalStorageManager();
+        setHasAllFilesPermission(granted);
+        setShowManualBanner(!granted);
+      } else {
+        setHasAllFilesPermission(true);
+        setShowManualBanner(false);
+      }
+    }, []);
+          console.debug('[Debug] requesting openManageAllFilesSettings after denial');
+          if (Platform.OS === 'android') ToastAndroid.show('Opening All-files settings…', ToastAndroid.SHORT);
+          await openManageAllFilesSettings();
+        } catch (e) {
+          console.debug('[Debug] openManageAllFilesSettings failed', e);
+          if (Platform.OS === 'android') ToastAndroid.show('Failed to open All-files settings', ToastAndroid.SHORT);
+        }
+      }
+    } catch (e) {
+      // silent fail
+    }
+  };
   return (
     <View style={styles.container}>
       {/* Decorative background elements */}
@@ -37,16 +108,19 @@ export default function HomeScreen() {
 
       <View style={styles.buttonsContainer}>
           <TouchableOpacity
-          style={[styles.button, styles.buttonPrimary]}
-          onPress={() => navigation.navigate('Categories' as never)}
-        >
-          <FontAwesome name="send-o" size={40} color="white" />
-          <Text style={styles.buttonText}>Send</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.button, styles.buttonSecondary]}>
-          <Feather name="download" size={40} color="white" />
-          <Text style={styles.buttonText}>Receive</Text>
-        </TouchableOpacity>
+            style={[styles.button, styles.buttonPrimary]}
+            onPress={() => navigation.navigate('Categories' as never)}
+          >
+            <FontAwesome name="send-o" size={40} color="white" />
+            <Text style={styles.buttonText}>Send</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.button, styles.buttonSecondary]}
+            onPress={() => navigation.navigate('Categories' as never)}
+          >
+            <Feather name="download" size={40} color="white" />
+            <Text style={styles.buttonText}>Receive</Text>
+          </TouchableOpacity>
       </View>
         <Text style={styles.helperText}>Both devices must be on the same network</Text>
 

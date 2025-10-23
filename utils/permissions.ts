@@ -1,4 +1,27 @@
-import { Platform, PermissionsAndroid, Alert, Linking } from 'react-native';
+import { Platform, PermissionsAndroid, Linking, NativeModules } from 'react-native';
+const AllFilesNative = NativeModules?.AllFilesPermissionModule;
+
+export const isExternalStorageManager = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android' || !AllFilesNative || typeof AllFilesNative.isExternalStorageManager !== 'function') {
+    return true;
+  }
+  try {
+    return await AllFilesNative.isExternalStorageManager();
+  } catch {
+    return false;
+  }
+};
+
+export const openManageAllFilesSettings = async (): Promise<boolean> => {
+  if (Platform.OS !== 'android' || !AllFilesNative || typeof AllFilesNative.openManageAllFilesSettings !== 'function') {
+    return false;
+  }
+  try {
+    return await AllFilesNative.openManageAllFilesSettings();
+  } catch {
+    return false;
+  }
+};
 
 export const requestStoragePermissions = async (): Promise<boolean> => {
   if (Platform.OS !== 'android') {
@@ -38,15 +61,22 @@ export const requestStoragePermissions = async (): Promise<boolean> => {
 export const openDeviceSettings = async (): Promise<void> => {
   if (Platform.OS === 'android') {
     try {
-      await Linking.openSettings();
+      // Try to open the exact All-files page via native module first
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const NativeModule = require('react-native').NativeModules?.AllFilesPermissionModule;
+      if (NativeModule && typeof NativeModule.openManageAllFiles === 'function') {
+        try { NativeModule.openManageAllFiles(); return; } catch (e) { /* fallthrough */ }
+      }
+      // If native module missing, silently return per user's instruction
     } catch (error) {
-      console.warn('Cannot open settings', error);
+      // silent fail
     }
   } else {
     // For iOS, open app settings
     await Linking.openURL('app-settings:');
   }
 };
+
 
 export const hasManageAllFilesPermission = async (): Promise<boolean> => {
   if (Platform.OS !== 'android') {
@@ -60,13 +90,7 @@ export const hasManageAllFilesPermission = async (): Promise<boolean> => {
   return requestStoragePermissions();
 };
 
-export const showPermissionDeniedAlert = (onOpenSettings: () => void) => {
-  Alert.alert(
-    'Permission Required',
-    'Storage permission is required to access files. Please grant the permission in settings.',
-    [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Open Settings', onPress: () => onOpenSettings() },
-    ],
-  );
+// No-op: user requested alerts be removed completely
+export const showPermissionDeniedAlert = (_onOpenSettings: () => void) => {
+  // Intentionally empty
 };
