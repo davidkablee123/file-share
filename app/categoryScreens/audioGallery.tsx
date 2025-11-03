@@ -24,10 +24,12 @@ export default function AudioGallery() {
     const [items, setItems] = useState<AudioItem[]>(() => audioCache);
     const [loading, setLoading] = useState(() => audioCache.length === 0);
     const [error, setError] = useState<string | null>(null);
+    const [selectionMode, setSelectionMode] = useState(false);
+    const [selected, setSelected] = useState<{[path: string]: boolean}>({});
 
-        const playerRef = useRef<any>(null);
+    const playerRef = useRef<any>(null);
 
-        useEffect(() => {
+    useEffect(() => {
         let isMounted = true;
         const load = async () => {
             if (audioCache.length > 0) return; // already loaded
@@ -45,28 +47,28 @@ export default function AudioGallery() {
                     if (isMounted) setError("File system native module isn't available. Install and rebuild the app (react-native-fs).");
                     return;
                 }
-                        // Build candidate roots and remove obvious duplicates (e.g. /sdcard and /storage/emulated/0 aliases)
-                        const potentialRoots = Platform.OS === 'android'
-                            ? [
-                                '/storage/emulated/0/Music',
-                                '/storage/emulated/0/Download',
-                                '/sdcard/Music',
-                                '/sdcard/Download',
-                                '/storage/emulated/0/Podcasts',
-                                '/storage/emulated/0/Audiobooks',
-                                '/storage/emulated/0/Alarms',
-                                '/storage/emulated/0/Notifications',
-                                '/storage/emulated/0/Ringtones',
-                                '/storage/emulated/0/Android/data'
-                            ]
-                            : [
-                                platformPaths.docs,
-                                platformPaths.caches,
-                                // bundle may contain media for some apps
-                                (platformPaths as any).bundle
-                            ].filter(Boolean) as string[];
-                        // Normalize and deduplicate root paths so we don't scan the same location twice
-                        const roots = Array.from(new Set(potentialRoots.map(p => (p || '').replace(/\/+$/, '')))).filter(Boolean);
+                // Build candidate roots and remove obvious duplicates (e.g. /sdcard and /storage/emulated/0 aliases)
+                const potentialRoots = Platform.OS === 'android'
+                    ? [
+                        '/storage/emulated/0/Music',
+                        '/storage/emulated/0/Download',
+                        '/sdcard/Music',
+                        '/sdcard/Download',
+                        '/storage/emulated/0/Podcasts',
+                        '/storage/emulated/0/Audiobooks',
+                        '/storage/emulated/0/Alarms',
+                        '/storage/emulated/0/Notifications',
+                        '/storage/emulated/0/Ringtones',
+                        '/storage/emulated/0/Android/data'
+                    ]
+                    : [
+                        platformPaths.docs,
+                        platformPaths.caches,
+                        // bundle may contain media for some apps
+                        (platformPaths as any).bundle
+                    ].filter(Boolean) as string[];
+                // Normalize and deduplicate root paths so we don't scan the same location twice
+                const roots = Array.from(new Set(potentialRoots.map(p => (p || '').replace(/\/+$/, '')))).filter(Boolean);
                 const collected: AudioItem[] = [];
                 // Track seen file paths to avoid adding duplicates coming from multiple roots/aliases
                 const seenPaths = new Set<string>();
@@ -98,7 +100,7 @@ export default function AudioGallery() {
             } catch (e) {
                 if (isMounted) setError('Failed to load audio files');
             } finally {
-                        if (isMounted) setLoading(false);
+                if (isMounted) setLoading(false);
             }
         };
         load();
@@ -109,68 +111,84 @@ export default function AudioGallery() {
                 try {
                     if (typeof playerRef.current.stop === 'function') playerRef.current.stop();
                     if (typeof playerRef.current.release === 'function') playerRef.current.release();
-                } catch (e) {}
+                } catch (e) { }
                 playerRef.current = null;
             }
         };
     }, []);
 
-            const handlePlay = (item: AudioItem) => {
-                if (!Sound) {
-                    setError("Audio playback native module not available. Install and rebuild react-native-sound.");
+    const handlePlay = (item: AudioItem) => {
+        if (!Sound) {
+            setError("Audio playback native module not available. Install and rebuild react-native-sound.");
+            return;
+        }
+        // stop any existing player
+        if (playerRef.current) {
+            try {
+                if (typeof playerRef.current.stop === 'function') playerRef.current.stop();
+                if (typeof playerRef.current.release === 'function') playerRef.current.release();
+            } catch (e) { }
+            playerRef.current = null;
+        }
+        // Determine constructor function
+        const SoundCtor = typeof Sound === 'function' ? Sound : (Sound && Sound.Sound) ? Sound.Sound : null;
+        if (!SoundCtor) {
+            setError('Audio native module has unexpected shape; playback unavailable.');
+            return;
+        }
+        // For absolute file paths on Android, pass empty basePath
+        try {
+            const s = new SoundCtor(item.path, '', (err: any) => {
+                if (err) {
+                    console.error('Sound error', err);
+                    setError('Failed to play audio');
                     return;
                 }
-                // stop any existing player
-                if (playerRef.current) {
-                    try {
-                        if (typeof playerRef.current.stop === 'function') playerRef.current.stop();
-                        if (typeof playerRef.current.release === 'function') playerRef.current.release();
-                    } catch (e) {}
+                playerRef.current = s;
+                s.play((success: boolean) => {
+                    if (!success) setError('Playback failed');
+                    try { s.release(); } catch { }
                     playerRef.current = null;
-                }
-                // Determine constructor function
-                const SoundCtor = typeof Sound === 'function' ? Sound : (Sound && Sound.Sound) ? Sound.Sound : null;
-                if (!SoundCtor) {
-                    setError('Audio native module has unexpected shape; playback unavailable.');
-                    return;
-                }
-                // For absolute file paths on Android, pass empty basePath
-                try {
-                    const s = new SoundCtor(item.path, '', (err: any) => {
-                        if (err) {
-                            console.error('Sound error', err);
-                            setError('Failed to play audio');
-                            return;
-                        }
-                        playerRef.current = s;
-                        s.play((success: boolean) => {
-                            if (!success) setError('Playback failed');
-                            try { s.release(); } catch {}
-                            playerRef.current = null;
-                        });
-                    });
-                } catch (err) {
-                    console.error('Failed to construct Sound:', err);
-                    setError('Playback initialization failed');
-                }
-            };
+                });
+            });
+        } catch (err) {
+            console.error('Failed to construct Sound:', err);
+            setError('Playback initialization failed');
+        }
+    };
 
-            const handleStop = () => {
-                if (playerRef.current) {
-                    try { playerRef.current.stop(); playerRef.current.release(); } catch {}
-                    playerRef.current = null;
-                }
-            };
+    const handleStop = () => {
+        if (playerRef.current) {
+            try { playerRef.current.stop(); playerRef.current.release(); } catch { }
+            playerRef.current = null;
+        }
+    };
 
     return (
         <View style={{ flex: 1, backgroundColor: '#0b0b12' }}>
             <TouchableOpacity
                 style={styles.backButton}
-                onPress={() => navigation.goBack()}
+                onPress={() => {
+                    if (selectionMode) {
+                        setSelectionMode(false);
+                        setSelected({});
+                    } else {
+                        navigation.goBack();
+                    }
+                }}
                 activeOpacity={0.7}
             >
-                <Entypo name="chevron-thin-left" size={20} color="white" />
+                <Entypo name={selectionMode ? "cross" : "chevron-thin-left"} size={20} color="white" />
             </TouchableOpacity>
+
+            {selectionMode && (
+                <View style={{flexDirection:'row',alignItems:'center',padding:10,backgroundColor:'#1a1333'}}>
+                    <Text style={{color:'#fff',fontWeight:'bold',marginRight:16}}>{Object.values(selected).filter(Boolean).length} selected</Text>
+                    <TouchableOpacity onPress={() => { setSelectionMode(false); setSelected({}); }} style={{marginRight:12}}>
+                        <Text style={{color:'#bbb'}}>Cancel</Text>
+                    </TouchableOpacity>
+                </View>
+            )}
 
             {loading ? (
                 <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
@@ -181,24 +199,47 @@ export default function AudioGallery() {
                     <Text style={{ color: 'white' }}>{error}</Text>
                 </View>
             ) : (
-                        <FlatList
-                            data={items}
-                            keyExtractor={(it) => it.path}
-                            renderItem={({ item }) => (
-                                <View style={{ padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                                    <Text style={{ color: 'white', flex: 1 }}>{item.name}</Text>
-                                            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                                                <TouchableOpacity onPress={() => handlePlay(item)} style={{ padding: 8 }}>
-                                                    <Text style={{ color: '#7d64ca' }}>Play</Text>
-                                                </TouchableOpacity>
-                                                <View style={{ width: 8 }} />
-                                                <TouchableOpacity onPress={handleStop} style={{ padding: 8 }}>
-                                                    <Text style={{ color: '#7d64ca' }}>Stop</Text>
-                                                </TouchableOpacity>
-                                            </View>
-                                </View>
-                            )}
-                        />
+                <FlatList
+                    data={items}
+                    keyExtractor={(it) => it.path}
+                    renderItem={({ item }) => {
+                        const isSelected = !!selected[item.path];
+                        return (
+                            <TouchableOpacity
+                                style={[
+                                    { padding: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+                                    isSelected && { backgroundColor: 'rgba(125, 100, 202, 0.2)' }
+                                ]}
+                                onLongPress={() => {
+                                    setSelectionMode(true);
+                                    setSelected((prev) => ({ ...prev, [item.path]: true }));
+                                }}
+                                onPress={() => {
+                                    if (selectionMode) {
+                                        setSelected((prev) => ({ ...prev, [item.path]: !prev[item.path] }));
+                                    }
+                                }}
+                            >
+                                <Text style={{ color: 'white', flex: 1 }}>{item.name}</Text>
+                                {selectionMode ? (
+                                    <View style={{backgroundColor:'#fff',borderRadius:12,padding:2,marginRight:8}}>
+                                        <Entypo name={isSelected ? 'check' : 'circle'} size={18} color={isSelected ? '#7d64ca' : '#bbb'} />
+                                    </View>
+                                ) : (
+                                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                                        <TouchableOpacity onPress={() => handlePlay(item)} style={{ padding: 8 }}>
+                                            <Text style={{ color: '#7d64ca' }}>Play</Text>
+                                        </TouchableOpacity>
+                                        <View style={{ width: 8 }} />
+                                        <TouchableOpacity onPress={handleStop} style={{ padding: 8 }}>
+                                            <Text style={{ color: '#7d64ca' }}>Stop</Text>
+                                        </TouchableOpacity>
+                                    </View>
+                                )}
+                            </TouchableOpacity>
+                        );
+                    }}
+                />
             )}
         </View>
     );

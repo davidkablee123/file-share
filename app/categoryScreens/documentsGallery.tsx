@@ -28,6 +28,8 @@ export default function DocumentsGallery() {
   const [items, setItems] = useState<DocItem[]>(() => docsCache);
   const [loading, setLoading] = useState(() => docsCache.length === 0);
   const [error, setError] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
 
   const [scannedRoots, setScannedRoots] = useState<string[]>([]);
 
@@ -92,13 +94,13 @@ export default function DocumentsGallery() {
           }
           if (collected.length >= 400) break;
         }
-  if (!isMounted) return;
-  console.log('[DocumentsGallery] collected files:', collected.length);
-  const uniqueMap = new Map<string, DocItem>();
-  for (const it of collected) uniqueMap.set(it.path, it);
-  const unique = Array.from(uniqueMap.values());
-  docsCache = unique;
-  setItems(unique);
+        if (!isMounted) return;
+        console.log('[DocumentsGallery] collected files:', collected.length);
+        const uniqueMap = new Map<string, DocItem>();
+        for (const it of collected) uniqueMap.set(it.path, it);
+        const unique = Array.from(uniqueMap.values());
+        docsCache = unique;
+        setItems(unique);
       } catch (e) {
         if (isMounted) setError('Failed to load documents');
       } finally {
@@ -160,18 +162,67 @@ export default function DocumentsGallery() {
   }, []);
 
 
-  const renderItem = ({ item }: { item: DocItem }) => (
-    <TouchableOpacity
-      style={styles.thumbWrap}
-      activeOpacity={0.8}
-      onPress={() => openDocument(item)}
-    >
-      <View style={styles.thumb}>
-        <Entypo name="text-document" size={34} color="white" />
-      </View>
-      <Text style={{ color: 'white', fontSize: 12, marginTop: 6 }} numberOfLines={1}>{item.name}</Text>
-    </TouchableOpacity>
-  );
+  const renderItem = ({ item }: { item: DocItem }) => {
+    const isSelected = selected[item.path] || false;
+    
+    return (
+      <TouchableOpacity
+        style={styles.thumbWrap}
+        activeOpacity={0.8}
+        onPress={() => {
+          if (selectionMode) {
+            const newSelected = { ...selected };
+            if (isSelected) {
+              delete newSelected[item.path];
+            } else {
+              newSelected[item.path] = true;
+            }
+            setSelected(newSelected);
+          } else {
+            openDocument(item);
+          }
+        }}
+        onLongPress={() => {
+          if (!selectionMode) {
+            setSelectionMode(true);
+            setSelected({ [item.path]: true });
+          }
+        }}
+      >
+        <View style={[
+          styles.thumb,
+          isSelected && { borderWidth: 2, borderColor: '#7d64ca' }
+        ]}>
+          <Entypo name="text-document" size={34} color="white" />
+          {selectionMode && (
+            <View style={{
+              position: 'absolute',
+              top: 5,
+              right: 5,
+              backgroundColor: isSelected ? '#7d64ca' : 'rgba(255,255,255,0.3)',
+              borderRadius: 12,
+              width: 24,
+              height: 24,
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}>
+              {isSelected ? (
+                <Entypo name="check" size={16} color="white" />
+              ) : (
+                <View style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: 9,
+                  backgroundColor: 'rgba(255,255,255,0.5)',
+                }} />
+              )}
+            </View>
+          )}
+        </View>
+        <Text style={{ color: 'white', fontSize: 12, marginTop: 6 }} numberOfLines={1}>{item.name}</Text>
+      </TouchableOpacity>
+    );
+  };
 
   if (loading) {
     return (
@@ -195,21 +246,45 @@ export default function DocumentsGallery() {
     <View style={styles.container}>
       <TouchableOpacity
         style={styles.backButton}
-        onPress={() => navigation.goBack()}
+        onPress={() => {
+          if (selectionMode) {
+            setSelectionMode(false);
+            setSelected({});
+          } else {
+            navigation.goBack();
+          }
+        }}
         activeOpacity={0.7}
       >
-        <Entypo name="chevron-thin-left" size={20} color="white" />
+        <Entypo name={selectionMode ? "cross" : "chevron-thin-left"} size={20} color="white" />
       </TouchableOpacity>
+
+      {selectionMode && (
+        <View style={styles.selectionHeader}>
+          <Text style={styles.selectionText}>
+            {Object.keys(selected).length} selected
+          </Text>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => {
+              setSelectionMode(false);
+              setSelected({});
+            }}
+          >
+            <Text style={styles.actionButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {error ? (
         <View style={styles.centerFill}><Text style={styles.errorText}>{error}</Text></View>
       ) : (
         items.length === 0 ? (
-          <View style={[styles.centerFill, { padding: 16 }]}> 
+          <View style={[styles.centerFill, { padding: 16 }]}>
             <Text style={{ color: 'white', marginBottom: 12 }}>No documents found in scanned folders.</Text>
-              <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center' }}>
-                If you denied storage permission earlier, open the app settings to grant access. The app will prompt for storage access on first launch.
-              </Text>
+            <Text style={{ color: 'rgba(255,255,255,0.75)', textAlign: 'center' }}>
+              If you denied storage permission earlier, open the app settings to grant access. The app will prompt for storage access on first launch.
+            </Text>
           </View>
         ) : (
           <FlatList
@@ -315,6 +390,23 @@ const styles = StyleSheet.create({
   },
   actionButtonText: {
     color: 'white',
+    fontWeight: '600',
+  },
+  selectionHeader: {
+    position: 'absolute',
+    top: 20,
+    left: 0,
+    right: 0,
+    height: 60,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 70,
+    zIndex: 5,
+  },
+  selectionText: {
+    color: 'white',
+    fontSize: 16,
     fontWeight: '600',
   },
 });

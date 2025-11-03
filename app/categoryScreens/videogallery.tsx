@@ -18,9 +18,6 @@ import * as safeRfs from '../utils/safeRfs';
 
 
 import Entypo from 'react-native-vector-icons/Entypo';
-// Load expo-av and expo-video-thumbnails dynamically so the project
-// can compile/run without those optional Expo packages. If they're
-// not available, we'll fall back to a simple message.
 let RNVideo: any = null;
 try {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -30,13 +27,6 @@ try {
 }
 let createThumbnailFunc: any = null;
 try {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  // Avoid requiring native thumbnail libraries at module-eval time.
-  // We'll intentionally leave createThumbnailFunc null here so the
-  // app doesn't try to configure native build-time code that may
-  // be incompatible with the current RN/Gradle setup. If you want
-  // to enable native thumbnail generation, provide it at runtime
-  // from a guarded initializer (see comments below).
   createThumbnailFunc = null;
 } catch (e) {
   createThumbnailFunc = null;
@@ -48,10 +38,7 @@ type VideoItem = {
   thumbnail?: string | null;
 };
 
-// module-level cache so we only scan once per app session
 let videosCache: VideoItem[] = [];
-// Whether we've performed the first scan in this app session. Controls
-// whether the loading spinner appears when opening the gallery again.
 let videosScannedOnce = false;
 
 const { width } = Dimensions.get('window');
@@ -73,21 +60,18 @@ const VIDEO_EXTS = ['mp4', 'mov', 'avi', 'mkv', '3gp', 'webm'];
 
 export default function VideoGallery() {
   const [videos, setVideos] = useState<VideoItem[]>(() => videosCache);
-  // Only show the spinner if we've never scanned videos this session
   const [loading, setLoading] = useState(() => (!videosScannedOnce && videosCache.length === 0));
   const [error, setError] = useState<string | null>(null);
   const [currentVideo, setCurrentVideo] = useState<string | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selected, setSelected] = useState<{[path: string]: boolean}>({});
   const roots = Platform.OS === 'android' ? ANDROID_VIDEO_DIRS : IOS_VIDEO_DIRS_PLACEHOLDER;
-  // Hooks must be called in the same order on every render. Move
-  // navigation hook here so it isn't skipped by early returns
-  // (loading/error) later in the render path.
   const navigation = useNavigation();
 
   useEffect(() => {
     let isMounted = true;
     const loadVideos = async () => {
       try {
-  // only show spinner on the first-ever load during this app session
   if (videosCache.length === 0) setLoading(true);
   setError(null);
         const hasPermission = await requestStoragePermissions();
@@ -96,7 +80,6 @@ export default function VideoGallery() {
           openDeviceSettings();
           return;
         }
-        // ensure native RNFS is available at runtime
         const platformPaths = safeRfs.getPlatformPaths();
         if (!platformPaths.docs && Platform.OS !== 'android') {
           if (isMounted) setError("File system native module isn't available. Install and rebuild the app (react-native-fs).");
@@ -121,7 +104,6 @@ export default function VideoGallery() {
         }
           for (const vid of collected) vid.thumbnail = null;
         if (isMounted) {
-          // cache results for subsequent openings during this app session
           videosCache = collected;
           videosScannedOnce = true;
           setVideos(collected);
@@ -180,11 +162,10 @@ export default function VideoGallery() {
     }) => {
       const videoRef = useRef<any>(null);
       const [playbackError, setPlaybackError] = useState<string | null>(null);
+      const isSelected = !!selected[item.path];
 
       useEffect(() => {
         return () => {
-          // react-native-video uses paused prop; there's no pauseAsync
-          // for expo-av we'd try to pause if we had a ref with pauseAsync
           if (videoRef.current && videoRef.current.pauseAsync) {
             videoRef.current.pauseAsync().catch(console.warn);
           }
@@ -192,7 +173,6 @@ export default function VideoGallery() {
       }, []);
 
       const handleError = (error: { error: { message?: string } } | string) => {
-        // Log the full error object to aid debugging in device logs
         console.error('Video playback error object:', error);
         const message =
           typeof error === 'string' ? error : error?.error?.message || 'Unknown error';
@@ -200,7 +180,15 @@ export default function VideoGallery() {
       };
 
       return (
-        <TouchableOpacity style={styles.videoContainer} onPress={onPress} activeOpacity={0.8}>
+        <TouchableOpacity 
+          style={[styles.videoContainer, isSelected && { borderWidth: 3, borderColor: '#7d64ca' }]} 
+          onPress={onPress} 
+          activeOpacity={0.8}
+          onLongPress={() => {
+            setSelectionMode(true);
+            setSelected((prev) => ({ ...prev, [item.path]: true }));
+          }}
+        >
           {isCurrent ? (
             <View style={styles.videoWrapper}>
               {playbackError ? (
@@ -213,7 +201,6 @@ export default function VideoGallery() {
                   <Text style={{ color: 'white', marginBottom: 8 }}>{playbackError}</Text>
                   <TouchableOpacity
                     onPress={() => {
-                      // toggle the current video to trigger re-mount of player
                       onPress();
                       setTimeout(() => onPress(), 200);
                     }}
@@ -225,7 +212,6 @@ export default function VideoGallery() {
               ) : (
                 <RNVideo
                   ref={videoRef}
-                  // Ensure local file URIs are provided as file:// for Android
                   source={{ uri: item.path.startsWith('file://') ? item.path : 'file://' + item.path }}
                   style={styles.video}
                   resizeMode={'contain'}
@@ -239,13 +225,7 @@ export default function VideoGallery() {
             </View>
               ) : (
               <View style={styles.thumbnailContainer}>
-                {/* JS-only placeholder: show a dim background with a centered play icon.
-                    This avoids native thumbnail dependencies while keeping a clear
-                    affordance for playback. If a native thumbnail provider is
-                    added later, set item.thumbnail to a file:// or http(s) URI
-                    before rendering and replace this block with an Image. */}
                 <View style={[styles.thumbnailImage, { backgroundColor: '#10121a', justifyContent: 'center', alignItems: 'center' }]}>
-                  {/* subtle pseudo-thumbnail: a faint rectangle and play glyph */}
                   <View style={{ width: '85%', height: '60%', backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 6 }} />
                 </View>
                 <View style={styles.playOverlay}>
@@ -255,6 +235,12 @@ export default function VideoGallery() {
                   {item.name}
                 </Text>
               </View>
+          )}
+          
+          {selectionMode && (
+            <View style={{position:'absolute',top:10,right:10,backgroundColor:'#fff',borderRadius:12,padding:2}}>
+              <Entypo name={isSelected ? 'check' : 'circle'} size={18} color={isSelected ? '#7d64ca' : '#bbb'} />
+            </View>
           )}
         </TouchableOpacity>
       );
@@ -286,7 +272,6 @@ export default function VideoGallery() {
     );
   }
 
-  // If react-native-video isn't available, show a friendly fallback UI.
   if (!RNVideo) {
     return (
       <View style={[styles.loadingContainer, { padding: 20 }]}> 
@@ -300,9 +285,29 @@ export default function VideoGallery() {
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()} activeOpacity={0.7}>
-        <Entypo name="chevron-left" size={32} color="white" />
+      <TouchableOpacity
+        style={styles.backButton}
+        onPress={() => {
+          if (selectionMode) {
+            setSelectionMode(false);
+            setSelected({});
+          } else {
+            navigation.goBack();
+          }
+        }}
+        activeOpacity={0.7}
+      >
+        <Entypo name={selectionMode ? "cross" : "chevron-left"} size={selectionMode ? 20 : 32} color="white" />
       </TouchableOpacity>
+
+      {selectionMode && (
+        <View style={{flexDirection:'row',alignItems:'center',padding:10,backgroundColor:'#1a1333'}}>
+          <Text style={{color:'#fff',fontWeight:'bold',marginRight:16}}>{Object.values(selected).filter(Boolean).length} selected</Text>
+          <TouchableOpacity onPress={() => { setSelectionMode(false); setSelected({}); }} style={{marginRight:12}}>
+            <Text style={{color:'#bbb'}}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <FlatList
         data={videos}
@@ -310,7 +315,13 @@ export default function VideoGallery() {
           <VideoCard
             item={item}
             isCurrent={currentVideo === item.path}
-            onPress={() => setCurrentVideo(item.path === currentVideo ? null : item.path)}
+            onPress={() => {
+              if (selectionMode) {
+                setSelected((prev) => ({ ...prev, [item.path]: !prev[item.path] }));
+              } else {
+                setCurrentVideo(item.path === currentVideo ? null : item.path);
+              }
+            }}
           />
         )}
         keyExtractor={(item) => item.path}
