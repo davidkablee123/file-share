@@ -153,16 +153,20 @@ export default function VideoGallery() {
   const VideoCard = React.memo(
     ({
       item,
-      isCurrent,
       onPress,
+      onLongPress,
+      isSelected,
+      selectionMode
     }: {
       item: VideoItem;
-      isCurrent: boolean;
       onPress: () => void;
+      onLongPress: () => void;
+      isSelected: boolean;
+      selectionMode: boolean;
     }) => {
+      const isCurrent = currentVideo === item.path;
       const videoRef = useRef<any>(null);
       const [playbackError, setPlaybackError] = useState<string | null>(null);
-      const isSelected = !!selected[item.path];
 
       useEffect(() => {
         return () => {
@@ -184,10 +188,7 @@ export default function VideoGallery() {
           style={[styles.videoContainer, isSelected && { borderWidth: 3, borderColor: '#7d64ca' }]} 
           onPress={onPress} 
           activeOpacity={0.8}
-          onLongPress={() => {
-            setSelectionMode(true);
-            setSelected((prev) => ({ ...prev, [item.path]: true }));
-          }}
+          onLongPress={onLongPress}
         >
           {isCurrent ? (
             <View style={styles.videoWrapper}>
@@ -243,6 +244,15 @@ export default function VideoGallery() {
             </View>
           )}
         </TouchableOpacity>
+      );
+    },
+    (prevProps, nextProps) => {
+      // Only re-render if these props change
+      return (
+        prevProps.isSelected === nextProps.isSelected &&
+        prevProps.selectionMode === nextProps.selectionMode &&
+        (prevProps.item.path === nextProps.item.path) &&
+        ((prevProps.item.path === currentVideo) === (nextProps.item.path === currentVideo))
       );
     }
   );
@@ -314,12 +324,19 @@ export default function VideoGallery() {
         renderItem={({ item }) => (
           <VideoCard
             item={item}
-            isCurrent={currentVideo === item.path}
+            isSelected={!!selected[item.path]}
+            selectionMode={selectionMode}
             onPress={() => {
               if (selectionMode) {
                 setSelected((prev) => ({ ...prev, [item.path]: !prev[item.path] }));
               } else {
                 setCurrentVideo(item.path === currentVideo ? null : item.path);
+              }
+            }}
+            onLongPress={() => {
+              if (!selectionMode) {
+                setSelectionMode(true);
+                setSelected({ [item.path]: true });
               }
             }}
           />
@@ -329,6 +346,10 @@ export default function VideoGallery() {
         contentContainerStyle={[styles.listContent, { padding: ITEM_GAP }]}
         columnWrapperStyle={{ gap: ITEM_GAP }}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={6}
+        windowSize={5}
+        removeClippedSubviews={Platform.OS === 'android'}
       />
     </View>
   );
